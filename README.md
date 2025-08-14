@@ -70,6 +70,8 @@ Issues and pull requests are welcome! This is research code, so expect some roug
 ## 📧 Contact
 
 Kim-Youngseong - dafaafafaf33@gmail.com
+Our discord - https://discord.gg/tfuYKTGTk5
+Our kakaotalk - https://open.kakao.com/o/gi5BuKGh
 
 ## 📜 License
 
