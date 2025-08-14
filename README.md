@@ -1,4 +1,4 @@
-# 🦅Condor: Fast-Converging Neural Attention via Learnable Connection Functions
+# 🦅 Condor: Fast-Converging Neural Attention via Learnable Connection Functions
 
 PyTorch implementation of "Condor: Neural Connection Networks for Enhanced Attention" 
 
