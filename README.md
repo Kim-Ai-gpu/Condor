@@ -22,8 +22,8 @@ python condor.py
 
 | Model | Perplexity | Epochs | Convergence |
 |-------|------------|--------|-------------|
-| Standard Transformer | 717.88 | 3 | ❌ Not converged |
-| **Neural KY-Attention** | **13.77** | **3** | ✅ **Fast convergence** |
+| Standard Transformer | 716.14 | 3 | ❌ Not converged |
+| **Neural KY-Attention** | **562.31** | **3** | ✅ **Fast convergence** |
 
 ## 🔧 Architecture
 
