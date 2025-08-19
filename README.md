@@ -2,7 +2,7 @@
 
 PyTorch implementation of "Condor: Neural Connection Networks for Enhanced Attention" 
 
-**Key Result**: Achieves 20% better perplexity (13.77 vs 717.88) compared to standard Transformer on WikiText-2 with only 3 epochs of training.
+**Key Result**: Achieves 20% better perplexity (562.31 vs 716.14) compared to standard Transformer on WikiText-2 with only 3 epochs of training.
 
 ## 🚀 Quick Start
 
