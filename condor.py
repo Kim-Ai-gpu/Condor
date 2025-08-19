@@ -10,7 +10,7 @@ import math
 import time
 from tqdm import tqdm
 
-# --- 1. Neural KY-Attention Model ---
+# --- 1. Neural KY-Attention Model (Causal Version) ---
 
 class ConnectionNetwork(nn.Module):
     """Learnable connection function network."""
@@ -30,7 +30,7 @@ class ConnectionNetwork(nn.Module):
         return self.net(positions)
 
 class NeuralKYAttention(nn.Module):
-    """Neural KY-Attention Layer - Improved with parallel processing."""
+    """Neural KY-Attention Layer - Corrected for Causal Autoregressive Tasks."""
     def __init__(self, d_model, window_size=7, num_heads=8, dropout=0.1):
         super().__init__()
         self.d_model = d_model
@@ -52,7 +52,8 @@ class NeuralKYAttention(nn.Module):
         self.out_proj = nn.Linear(d_model, d_model)
 
         self.dropout_layer = nn.Dropout(dropout)
-        self.padding = self.window_size // 2
+        # --- FIX: Removed symmetric padding definition from init ---
+        # self.padding = self.window_size // 2
 
     def forward(self, x, mask=None, return_weights=False):
         B, L, D = x.shape
@@ -61,9 +62,13 @@ class NeuralKYAttention(nn.Module):
         K = self.k_proj(x).view(B, L, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         V = self.v_proj(x).view(B, L, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
 
-        K_padded = F.pad(K, (0, 0, self.padding, self.padding), 'constant', 0)
-        V_padded = F.pad(V, (0, 0, self.padding, self.padding), 'constant', 0)
+        # --- FIX: Changed symmetric padding to causal (left-only) padding ---
+        # This ensures that the model only attends to past and current tokens.
+        causal_padding = self.window_size - 1
+        K_padded = F.pad(K, (0, 0, causal_padding, 0), 'constant', 0)
+        V_padded = F.pad(V, (0, 0, causal_padding, 0), 'constant', 0)
 
+        # Create sliding windows. Due to left-padding, each window is causal.
         K_windows = K_padded.unfold(2, self.window_size, 1).permute(0, 1, 2, 4, 3)
         V_windows = V_padded.unfold(2, self.window_size, 1).permute(0, 1, 2, 4, 3)
 
@@ -82,7 +87,8 @@ class NeuralKYAttention(nn.Module):
         final_weights = final_weights / (final_weights.sum(dim=-1, keepdim=True) + 1e-9)
 
         if mask is not None:
-            mask_padded = F.pad(mask.float(), (self.padding, self.padding), 'constant', 1)
+            # --- FIX: Apply causal padding to the attention mask as well ---
+            mask_padded = F.pad(mask.float(), (causal_padding, 0), 'constant', 0) 
             mask_windows = mask_padded.unfold(1, self.window_size, 1).unsqueeze(1)
             final_weights = final_weights.masked_fill(mask_windows == 0, 0)
             final_weights = final_weights / (final_weights.sum(dim=-1, keepdim=True) + 1e-9)
@@ -93,13 +99,18 @@ class NeuralKYAttention(nn.Module):
         output = self.dropout_layer(output)
 
         if return_weights:
+            # --- FIX: Reconstruct dense attention matrix based on causal windowing ---
             final_weights_dense = torch.zeros(B, self.num_heads, L, L, device=x.device)
             for i in range(L):
-                start = max(0, i - self.padding)
-                end = min(L, i + self.padding + 1)
-                win_start = max(0, self.padding - i)
-                win_end = self.window_size - max(0, i + self.padding + 1 - L)
-                final_weights_dense[:, :, i, start:end] = final_weights[:, :, i, win_start:win_end]
+                # The window for query i contains keys from `start` to `end`.
+                start = max(0, i - self.window_size + 1)
+                end = i + 1
+                
+                # Extract the relevant part of the calculated windowed weights.
+                win_len = end - start
+                win_start = self.window_size - win_len
+                
+                final_weights_dense[:, :, i, start:end] = final_weights[:, :, i, win_start:]
             return output, final_weights_dense
 
         return output
@@ -161,6 +172,7 @@ class Condor(BaseTransformer):
 
         all_attention_weights = []
         for layer in self.layers:
+            # The mask is now correctly handled inside the NeuralKYAttention
             if return_weights:
                 attn_out, attn_weights = layer['attention'](x, attention_mask, return_weights=True)
                 all_attention_weights.append(attn_weights)
@@ -199,7 +211,8 @@ class StandardTransformer(BaseTransformer):
 
     def forward(self, input_ids, attention_mask=None):
         B, L = input_ids.shape
-        src_mask = torch.triu(torch.ones(L, L) * float('-inf'), diagonal=1).to(input_ids.device)
+        # This is the standard way to ensure causality in autoregressive transformers.
+        src_mask = torch.triu(torch.ones(L, L, device=input_ids.device) * float('-inf'), diagonal=1)
 
         x = self.token_embedding(input_ids) + self.pos_embedding[:L]
         x = self.dropout(x)
@@ -244,7 +257,7 @@ class WikiTextDataset(Dataset):
 def load_wikitext_data(tokenizer, max_samples=2000):
     """Load WikiText-2 data."""
     print("Loading WikiText-2 dataset...")
-    dataset = load_dataset("wikitext", "wikitext-2-raw-v1", trust_remote_code=True)
+    dataset = load_dataset("wikitext", "wikitext-2-raw-v1")
     train_texts = [text for text in dataset['train']['text'] if len(text.strip()) > 10][:max_samples]
     valid_texts = [text for text in dataset['validation']['text'] if len(text.strip()) > 10][:max_samples//5]
     print(f"Loaded {len(train_texts)} training samples and {len(valid_texts)} validation samples.")
@@ -264,10 +277,8 @@ def train_epoch(model, loader, optimizer, criterion, scheduler, device, model_ty
         input_ids, attention_mask, labels = input_ids.to(device), attention_mask.to(device), labels.to(device)
         
         optimizer.zero_grad()
-        if model_type == 'nky':
-            logits = model(input_ids, attention_mask=attention_mask.bool())
-        else: # standard
-            logits = model(input_ids, attention_mask=attention_mask)
+        # Pass the standard attention mask to both models
+        logits = model(input_ids, attention_mask=attention_mask)
 
         loss = criterion(logits.view(-1, logits.size(-1)), labels.view(-1))
         
@@ -289,10 +300,7 @@ def evaluate(model, loader, criterion, device, model_type):
         for input_ids, attention_mask, labels in pbar:
             input_ids, attention_mask, labels = input_ids.to(device), attention_mask.to(device), labels.to(device)
             
-            if model_type == 'nky':
-                 logits = model(input_ids, attention_mask=attention_mask.bool())
-            else: # standard
-                 logits = model(input_ids, attention_mask=attention_mask)
+            logits = model(input_ids, attention_mask=attention_mask)
                  
             loss = criterion(logits.view(-1, logits.size(-1)), labels.view(-1))
             total_loss += loss.item()
@@ -317,17 +325,11 @@ def run_experiment(model, model_name, train_loader, valid_loader, num_epochs, de
     for epoch in range(num_epochs):
         print(f"\nEpoch {epoch+1}/{num_epochs}")
         
-        # Reset memory stats for training
-        if device.type == 'cuda':
-            torch.cuda.reset_peak_memory_stats(device)
-        
+        if device.type == 'cuda': torch.cuda.reset_peak_memory_stats(device)
         train_loss = train_epoch(model, train_loader, optimizer, criterion, scheduler, device, model_type)
         train_mem = torch.cuda.max_memory_allocated(device) / (1024 ** 2) if device.type == 'cuda' else 0
         
-        # Reset memory stats for validation
-        if device.type == 'cuda':
-            torch.cuda.reset_peak_memory_stats(device)
-            
+        if device.type == 'cuda': torch.cuda.reset_peak_memory_stats(device)
         valid_loss = evaluate(model, valid_loader, criterion, device, model_type)
         valid_mem = torch.cuda.max_memory_allocated(device) / (1024 ** 2) if device.type == 'cuda' else 0
         
@@ -353,19 +355,14 @@ def measure_inference_performance(model, loader, device, model_type, num_batches
     total_time = 0
     total_samples = 0
     
-    # Reset memory stats
-    if device.type == 'cuda':
-        torch.cuda.reset_peak_memory_stats(device)
+    if device.type == 'cuda': torch.cuda.reset_peak_memory_stats(device)
 
     with torch.no_grad():
-        # Warm-up
         for i, (input_ids, attention_mask, _) in enumerate(loader):
-            if i >= 5: break
+            if i >= 5: break # Warm-up
             input_ids, attention_mask = input_ids.to(device), attention_mask.to(device)
-            if model_type == 'nky': model(input_ids, attention_mask=attention_mask.bool())
-            else: model(input_ids, attention_mask=attention_mask)
+            model(input_ids, attention_mask=attention_mask)
         
-        # Measurement
         pbar = tqdm(loader, desc="Measuring Inference Performance", total=num_batches)
         for i, (input_ids, attention_mask, _) in enumerate(pbar):
             if i >= num_batches: break
@@ -375,8 +372,7 @@ def measure_inference_performance(model, loader, device, model_type, num_batches
             if device.type == 'cuda': torch.cuda.synchronize()
             start_time = time.time()
             
-            if model_type == 'nky': model(input_ids, attention_mask=attention_mask.bool())
-            else: model(input_ids, attention_mask=attention_mask)
+            model(input_ids, attention_mask=attention_mask)
             
             if device.type == 'cuda': torch.cuda.synchronize()
             end_time = time.time()
@@ -389,7 +385,6 @@ def measure_inference_performance(model, loader, device, model_type, num_batches
     
     return samples_per_sec, peak_mem
 
-
 # --- 5. Main Function ---
 
 def main():
@@ -397,34 +392,22 @@ def main():
     print("Neural KY-Attention vs Standard Transformer Comparison")
     print("=" * 60)
     
-    # --- Configuration ---
     config = {
-        'd_model': 256,
-        'num_layers': 4,
-        'num_heads': 8,
-        'ff_dim': 1024,
-        'max_len': 256,
-        'dropout': 0.1,
-        'window_size': 15, # Used by NKY Attention only
-        'batch_size': 16,
-        'num_epochs': 3,
-        'max_samples': 5000
+        'd_model': 256, 'num_layers': 4, 'num_heads': 8, 'ff_dim': 1024,
+        'max_len': 256, 'dropout': 0.1, 'window_size': 15, 
+        'batch_size': 16, 'num_epochs': 3, 'max_samples': 5000
     }
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
-    # --- Tokenizer and Data Loading ---
-    print("\nLoading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained('gpt2')
     tokenizer.pad_token = tokenizer.eos_token
     
     train_dataset, valid_dataset = load_wikitext_data(tokenizer, max_samples=config['max_samples'])
     train_loader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True)
     valid_loader = DataLoader(valid_dataset, batch_size=config['batch_size'])
-    print(f"Train batches: {len(train_loader)}, Valid batches: {len(valid_loader)}")
     
-    # --- Model Creation ---
     vocab_size = len(tokenizer)
     
     nky_model = Condor(
@@ -441,15 +424,13 @@ def main():
 
     print("\nModel Parameter Counts:")
     print(f"  - Neural KY Transformer: {sum(p.numel() for p in nky_model.parameters()):,}")
-    print(f"  - Standard Transformer:  {sum(p.numel() for p in std_model.parameters()):,}")
+    print(f"  - Standard Transformer:         {sum(p.numel() for p in std_model.parameters()):,}")
     
-    # --- Run Experiments ---
     overall_start_time = time.time()
     
     nky_history = run_experiment(nky_model, "Neural KY Transformer", train_loader, valid_loader, config['num_epochs'], device, 'nky')
     std_history = run_experiment(std_model, "Standard Transformer", train_loader, valid_loader, config['num_epochs'], device, 'std')
     
-    # --- Measure Inference Performance ---
     print("\n--- Measuring Inference Performance ---")
     nky_speed, nky_inf_mem = measure_inference_performance(nky_model, valid_loader, device, 'nky')
     std_speed, std_inf_mem = measure_inference_performance(std_model, valid_loader, device, 'std')
@@ -457,9 +438,8 @@ def main():
     total_time = time.time() - overall_start_time
     print(f"\nTotal experiment time: {total_time/60:.2f} minutes")
 
-    # --- Final Results Summary ---
     print("\n--- Final Results ---")
-    print(f"{'Metric':<25} | {'Neural KY Transformer':<25} | {'Standard Transformer':<25}")
+    print(f"{'Metric':<25} | {'Neural KY':<25} | {'Standard Transformer':<25}")
     print("-" * 80)
     print(f"{'Final Valid Loss':<25} | {nky_history['valid_loss'][-1]:<25.4f} | {std_history['valid_loss'][-1]:<25.4f}")
     print(f"{'Final Perplexity':<25} | {nky_history['perplexity'][-1]:<25.2f} | {std_history['perplexity'][-1]:<25.2f}")
@@ -467,61 +447,36 @@ def main():
     print(f"{'Inference Speed (s/sec)':<25} | {nky_speed:<25.2f} | {std_speed:<25.2f}")
     print(f"{'Inference Memory (MB)':<25} | {nky_inf_mem:<25.2f} | {std_inf_mem:<25.2f}")
 
-
-    # --- Results Visualization ---
     epochs = range(1, config['num_epochs'] + 1)
-    
     plt.style.use('seaborn-v0_8-whitegrid')
     
-    # Loss and Perplexity Curves
     fig1, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
     fig1.suptitle('Model Performance Comparison', fontsize=16)
 
-    ax1.plot(epochs, nky_history['valid_loss'], 'o-', label='Neural KY (Valid Loss)')
+    ax1.plot(epochs, nky_history['valid_loss'], 'o-', label='NKY (Valid Loss)')
     ax1.plot(epochs, std_history['valid_loss'], 's-', label='Standard (Valid Loss)')
-    ax1.set_title('Validation Loss per Epoch')
-    ax1.set_xlabel('Epoch')
-    ax1.set_ylabel('Loss')
-    ax1.legend()
+    ax1.set_title('Validation Loss per Epoch'); ax1.set_xlabel('Epoch'); ax1.set_ylabel('Loss'); ax1.legend()
 
-    ax2.plot(epochs, nky_history['perplexity'], 'o-', label='Neural KY (Perplexity)')
+    ax2.plot(epochs, nky_history['perplexity'], 'o-', label='NKY (Perplexity)')
     ax2.plot(epochs, std_history['perplexity'], 's-', label='Standard (Perplexity)')
-    ax2.set_title('Validation Perplexity per Epoch')
-    ax2.set_xlabel('Epoch')
-    ax2.set_ylabel('Perplexity')
-    ax2.legend()
+    ax2.set_title('Validation Perplexity per Epoch'); ax2.set_xlabel('Epoch'); ax2.set_ylabel('Perplexity'); ax2.legend()
     
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plt.savefig('model_performance_curves.png', dpi=150)
-    plt.show()
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95]); plt.show()
 
-    # Performance Metrics Bar Chart
     fig2, (ax3, ax4) = plt.subplots(1, 2, figsize=(14, 6))
     fig2.suptitle('Inference Performance & Memory Usage', fontsize=16)
     
-    models = ['Neural KY', 'Standard']
-    speeds = [nky_speed, std_speed]
-    memories = [nky_inf_mem, std_inf_mem]
+    models = ['NKY', 'Standard']; speeds = [nky_speed, std_speed]; memories = [nky_inf_mem, std_inf_mem]
     
-    ax3.bar(models, speeds, color=['#1f77b4', '#ff7f0e'])
-    ax3.set_title('Inference Speed')
-    ax3.set_ylabel('Samples / Second')
-    for i, v in enumerate(speeds):
-        ax3.text(i, v + 0.5, f"{v:.2f}", ha='center', va='bottom')
+    ax3.bar(models, speeds, color=['#1f77b4', '#ff7f0e']); ax3.set_title('Inference Speed'); ax3.set_ylabel('Samples / Second')
+    for i, v in enumerate(speeds): ax3.text(i, v, f"{v:.2f}", ha='center', va='bottom')
 
-    ax4.bar(models, memories, color=['#1f77b4', '#ff7f0e'])
-    ax4.set_title('Peak Inference Memory')
-    ax4.set_ylabel('Peak Memory (MB)')
-    for i, v in enumerate(memories):
-        ax4.text(i, v + 2, f"{v:.2f}", ha='center', va='bottom')
+    ax4.bar(models, memories, color=['#1f77b4', '#ff7f0e']); ax4.set_title('Peak Inference Memory'); ax4.set_ylabel('Peak Memory (MB)')
+    for i, v in enumerate(memories): ax4.text(i, v, f"{v:.2f}", ha='center', va='bottom')
         
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plt.savefig('inference_performance_comparison.png', dpi=150)
-    plt.show()
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95]); plt.show()
 
-
-    # --- Learned Pattern Analysis (Neural KY) ---
-    print("\nAnalyzing learned connection function patterns of Neural KY model...")
+    print("\nAnalyzing learned connection function patterns of NKY model...")
     sample_text = "The Transformer architecture, introduced in the paper 'Attention Is All You Need', has revolutionized the field of Natural Language Processing."
     try:
         analyze_learned_patterns(nky_model, sample_text, tokenizer, device, config['window_size'])
@@ -537,7 +492,6 @@ def analyze_learned_patterns(model, sample_input, tokenizer, device, window_size
         input_ids = torch.tensor([tokenizer.encode(sample_input)[:50]], device=device)
         _, attention_weights = model(input_ids, return_weights=True)
         
-        first_layer_weights = attention_weights[0] 
         num_heads = model.layers[0]['attention'].num_heads
         
         fig, axes = plt.subplots(2, (num_heads + 1) // 2, figsize=(16, 8), sharey=True)
@@ -554,13 +508,9 @@ def analyze_learned_patterns(model, sample_input, tokenizer, device, window_size
             
             ax.plot(positions.squeeze().cpu().numpy(), learned_function, 'b-', linewidth=2)
             ax.set_title(f'Head {head+1}')
-            ax.set_xlabel('Normalized Position')
-            ax.set_ylabel('Connection Weight')
-            ax.grid(True, alpha=0.3)
+            ax.set_xlabel('Normalized Position'); ax.set_ylabel('Connection Weight'); ax.grid(True, alpha=0.3)
         
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-        plt.savefig('learned_connection_functions.png', dpi=150)
-        plt.show()
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95]); plt.show()
 
 if __name__ == "__main__":
     main()
