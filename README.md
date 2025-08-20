@@ -2,7 +2,7 @@
 
 PyTorch implementation of "Condor: Neural Connection Networks for Enhanced Attention" 
 
-**Key Result**: Achieves 18.4% better perplexity (51.00 vs 62.51) compared to standard Transformer on PTB with only 3 epochs of training.
+**Key Result**: Achieves 18.4% better perplexity (51.00 vs 62.51) compared to standard Transformer on wikitext-2 with only 3 epochs of training.
 
 ## 🚀 Quick Start
 
@@ -60,7 +60,7 @@ Neural KY-Attention extends traditional self-attention with learnable connection
 - Python 3.8+
 - PyTorch 1.9+
 - transformers
-- datasets==1.18.4 (for PTB dataset support)
+- datasets==1.18.4 (for wikitext-2 dataset support)
 
 ## 🤝 Contributing
 
