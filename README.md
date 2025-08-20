@@ -57,11 +57,10 @@ Neural KY-Attention extends traditional self-attention with learnable connection
 - **Code**: You're looking at it! 🎉
 
 ## 🛠 Requirements
-
 - Python 3.8+
 - PyTorch 1.9+
 - transformers
-- datasets
+- datasets==1.18.4 (for PTB dataset support)
 
 ## 🤝 Contributing
 
