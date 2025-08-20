@@ -10,10 +10,7 @@ import math
 import time
 from tqdm import tqdm
 
-# --- 1. Neural KY-Attention Model (Causal Version) ---
-
 class ConnectionNetwork(nn.Module):
-    """Learnable connection function network."""
     def __init__(self, hidden_dim=64, output_dim=1):
         super().__init__()
         self.net = nn.Sequential(
@@ -30,7 +27,6 @@ class ConnectionNetwork(nn.Module):
         return self.net(positions)
 
 class NeuralKYAttention(nn.Module):
-    """Neural KY-Attention Layer - Corrected for Causal Autoregressive Tasks."""
     def __init__(self, d_model, window_size=7, num_heads=8, dropout=0.1):
         super().__init__()
         self.d_model = d_model
@@ -52,8 +48,6 @@ class NeuralKYAttention(nn.Module):
         self.out_proj = nn.Linear(d_model, d_model)
 
         self.dropout_layer = nn.Dropout(dropout)
-        # --- FIX: Removed symmetric padding definition from init ---
-        # self.padding = self.window_size // 2
 
     def forward(self, x, mask=None, return_weights=False):
         B, L, D = x.shape
@@ -62,13 +56,10 @@ class NeuralKYAttention(nn.Module):
         K = self.k_proj(x).view(B, L, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         V = self.v_proj(x).view(B, L, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
 
-        # --- FIX: Changed symmetric padding to causal (left-only) padding ---
-        # This ensures that the model only attends to past and current tokens.
         causal_padding = self.window_size - 1
         K_padded = F.pad(K, (0, 0, causal_padding, 0), 'constant', 0)
         V_padded = F.pad(V, (0, 0, causal_padding, 0), 'constant', 0)
 
-        # Create sliding windows. Due to left-padding, each window is causal.
         K_windows = K_padded.unfold(2, self.window_size, 1).permute(0, 1, 2, 4, 3)
         V_windows = V_padded.unfold(2, self.window_size, 1).permute(0, 1, 2, 4, 3)
 
@@ -87,8 +78,7 @@ class NeuralKYAttention(nn.Module):
         final_weights = final_weights / (final_weights.sum(dim=-1, keepdim=True) + 1e-9)
 
         if mask is not None:
-            # --- FIX: Apply causal padding to the attention mask as well ---
-            mask_padded = F.pad(mask.float(), (causal_padding, 0), 'constant', 0) 
+            mask_padded = F.pad(mask.float(), (causal_padding, 0), 'constant', 0)
             mask_windows = mask_padded.unfold(1, self.window_size, 1).unsqueeze(1)
             final_weights = final_weights.masked_fill(mask_windows == 0, 0)
             final_weights = final_weights / (final_weights.sum(dim=-1, keepdim=True) + 1e-9)
@@ -99,14 +89,11 @@ class NeuralKYAttention(nn.Module):
         output = self.dropout_layer(output)
 
         if return_weights:
-            # --- FIX: Reconstruct dense attention matrix based on causal windowing ---
             final_weights_dense = torch.zeros(B, self.num_heads, L, L, device=x.device)
             for i in range(L):
-                # The window for query i contains keys from `start` to `end`.
                 start = max(0, i - self.window_size + 1)
                 end = i + 1
                 
-                # Extract the relevant part of the calculated windowed weights.
                 win_len = end - start
                 win_start = self.window_size - win_len
                 
@@ -116,7 +103,6 @@ class NeuralKYAttention(nn.Module):
         return output
 
 class BaseTransformer(nn.Module):
-    """Base class for all Transformer models."""
     def __init__(self, vocab_size, d_model=512, num_layers=6, num_heads=8,
                  ff_dim=2048, max_len=512, dropout=0.1):
         super().__init__()
@@ -144,7 +130,6 @@ class BaseTransformer(nn.Module):
         raise NotImplementedError
 
 class Condor(BaseTransformer):
-    """Condor for WikiText."""
     def __init__(self, vocab_size, d_model=512, num_layers=6, num_heads=8,
                  ff_dim=2048, max_len=512, dropout=0.1, window_size=7):
         super().__init__(vocab_size, d_model, num_layers, num_heads, ff_dim, max_len, dropout)
@@ -172,7 +157,6 @@ class Condor(BaseTransformer):
 
         all_attention_weights = []
         for layer in self.layers:
-            # The mask is now correctly handled inside the NeuralKYAttention
             if return_weights:
                 attn_out, attn_weights = layer['attention'](x, attention_mask, return_weights=True)
                 all_attention_weights.append(attn_weights)
@@ -190,10 +174,7 @@ class Condor(BaseTransformer):
             return logits, all_attention_weights
         return logits
 
-# --- 2. Standard Transformer Model ---
-
 class StandardTransformer(BaseTransformer):
-    """Standard Transformer for WikiText."""
     def __init__(self, vocab_size, d_model=512, num_layers=6, num_heads=8,
                  ff_dim=2048, max_len=512, dropout=0.1):
         super().__init__(vocab_size, d_model, num_layers, num_heads, ff_dim, max_len, dropout)
@@ -211,7 +192,6 @@ class StandardTransformer(BaseTransformer):
 
     def forward(self, input_ids, attention_mask=None):
         B, L = input_ids.shape
-        # This is the standard way to ensure causality in autoregressive transformers.
         src_mask = torch.triu(torch.ones(L, L, device=input_ids.device) * float('-inf'), diagonal=1)
 
         x = self.token_embedding(input_ids) + self.pos_embedding[:L]
@@ -224,16 +204,13 @@ class StandardTransformer(BaseTransformer):
         logits = self.lm_head(output)
         return logits
 
-# --- 3. Data Processing ---
-
-class WikiTextDataset(Dataset):
-    """Wrapper for WikiText dataset."""
+class PTBDataset(Dataset):
     def __init__(self, texts, tokenizer, max_length=256):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.examples = [
             tokenizer.encode(text, max_length=self.max_length, truncation=True)
-            for text in texts if len(text.strip()) > 50
+            for text in texts
         ]
 
     def __len__(self):
@@ -254,19 +231,16 @@ class WikiTextDataset(Dataset):
 
         return input_ids, attention_mask, labels
 
-def load_wikitext_data(tokenizer, max_samples=2000):
-    """Load WikiText-2 data."""
-    print("Loading WikiText-2 dataset...")
-    dataset = load_dataset("wikitext", "wikitext-2-raw-v1")
-    train_texts = [text for text in dataset['train']['text'] if len(text.strip()) > 10][:max_samples]
-    valid_texts = [text for text in dataset['validation']['text'] if len(text.strip()) > 10][:max_samples//5]
+def load_ptb_data(tokenizer):
+    print("Loading PTB dataset...")
+    dataset = load_dataset("ptb_text_only", "penn_treebank",trust_remote_code=True)
+    train_texts = [text for text in dataset['train']['sentence'] if len(text.strip()) > 0]
+    valid_texts = [text for text in dataset['validation']['sentence'] if len(text.strip()) > 0]
     print(f"Loaded {len(train_texts)} training samples and {len(valid_texts)} validation samples.")
     
-    train_dataset = WikiTextDataset(train_texts, tokenizer, max_length=256)
-    valid_dataset = WikiTextDataset(valid_texts, tokenizer, max_length=256)
+    train_dataset = PTBDataset(train_texts, tokenizer, max_length=256)
+    valid_dataset = PTBDataset(valid_texts, tokenizer, max_length=256)
     return train_dataset, valid_dataset
-
-# --- 4. Training, Evaluation, and Benchmarking ---
 
 def train_epoch(model, loader, optimizer, criterion, scheduler, device, model_type):
     model.train()
@@ -277,7 +251,6 @@ def train_epoch(model, loader, optimizer, criterion, scheduler, device, model_ty
         input_ids, attention_mask, labels = input_ids.to(device), attention_mask.to(device), labels.to(device)
         
         optimizer.zero_grad()
-        # Pass the standard attention mask to both models
         logits = model(input_ids, attention_mask=attention_mask)
 
         loss = criterion(logits.view(-1, logits.size(-1)), labels.view(-1))
@@ -308,7 +281,6 @@ def evaluate(model, loader, criterion, device, model_type):
     return total_loss / len(loader)
 
 def run_experiment(model, model_name, train_loader, valid_loader, num_epochs, device, model_type):
-    """Run a single model experiment."""
     print(f"\n--- Starting Experiment: {model_name} ---")
     model.to(device)
     
@@ -349,7 +321,6 @@ def run_experiment(model, model_name, train_loader, valid_loader, num_epochs, de
     return history
 
 def measure_inference_performance(model, loader, device, model_type, num_batches=50):
-    """Measure inference speed and memory usage."""
     model.eval().to(device)
     
     total_time = 0
@@ -359,7 +330,7 @@ def measure_inference_performance(model, loader, device, model_type, num_batches
 
     with torch.no_grad():
         for i, (input_ids, attention_mask, _) in enumerate(loader):
-            if i >= 5: break # Warm-up
+            if i >= 5: break
             input_ids, attention_mask = input_ids.to(device), attention_mask.to(device)
             model(input_ids, attention_mask=attention_mask)
         
@@ -385,17 +356,14 @@ def measure_inference_performance(model, loader, device, model_type, num_batches
     
     return samples_per_sec, peak_mem
 
-# --- 5. Main Function ---
-
 def main():
-    """Main comparison experiment function."""
     print("Neural KY-Attention vs Standard Transformer Comparison")
     print("=" * 60)
     
     config = {
         'd_model': 256, 'num_layers': 4, 'num_heads': 8, 'ff_dim': 1024,
         'max_len': 256, 'dropout': 0.1, 'window_size': 15, 
-        'batch_size': 16, 'num_epochs': 3, 'max_samples': 5000
+        'batch_size': 16, 'num_epochs': 3
     }
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -404,7 +372,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained('gpt2')
     tokenizer.pad_token = tokenizer.eos_token
     
-    train_dataset, valid_dataset = load_wikitext_data(tokenizer, max_samples=config['max_samples'])
+    train_dataset, valid_dataset = load_ptb_data(tokenizer)
     train_loader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True)
     valid_loader = DataLoader(valid_dataset, batch_size=config['batch_size'])
     
@@ -483,9 +451,7 @@ def main():
     except Exception as e:
         print(f"An error occurred during pattern analysis: {e}")
 
-
 def analyze_learned_patterns(model, sample_input, tokenizer, device, window_size):
-    """Analyze learned connection function patterns."""
     model.eval().to(device)
     
     with torch.no_grad():
