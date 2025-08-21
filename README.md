@@ -18,10 +18,10 @@ python condor.py
 ```
 
 ## 📊 Results
-| Model | Perplexity | Complexity | Training Speed | Memory |
-|-------|------------|------------|----------------|---------|
-| Standard Transformer | 110.30 | O(L²H) | Baseline | 4.6GB |
-| **Neural KY-Attention** | **100.86** | **O(LWH)** | **3.1x faster** | **2.3x efficient** |
+| Model | Perplexity | Epochs | Speed | Notes |
+|-------|------------|--------|-------------|-------|
+| Standard Transformer | 110.30 | 3 | ❌ Slow | Industry standard |
+| **Neural KY-Attention** | **100.86** | **3** | ✅ **Fast** | **Novel architecture** |
 
 ## 🧠 The Innovation Behind Condor
 
