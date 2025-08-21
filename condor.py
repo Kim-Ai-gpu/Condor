@@ -259,7 +259,7 @@ class CustomTextDataset(Dataset):
 
 def load_wikitext_data(tokenizer):
     print("Loading Wikitext-2 dataset...")
-    dataset = load_dataset('wikitext', 'wikitext-2-v1', trust_remote_code=True)
+    dataset = load_dataset('wikitext', 'wikitext-2-v1')
     
     train_texts = [text for text in dataset['train']['text'] if len(text.strip()) > 0]
     valid_texts = [text for text in dataset['validation']['text'] if len(text.strip()) > 0]
@@ -483,3 +483,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
